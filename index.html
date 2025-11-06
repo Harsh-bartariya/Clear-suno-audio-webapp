@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Low-Bandwidth Video Chat (Multi-User)</title>
+    <!-- Using Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the toggle switch */
+        .toggle-checkbox:checked {
+            @apply: bg-blue-600;
+            right: 0;
+            border-color: #3b82f6;
+        }
+        .toggle-checkbox:checked + .toggle-label {
+            @apply: bg-blue-600;
+        }
+    </style>
+    <!-- Import Firebase v11.6.1 SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, onSnapshot, addDoc, deleteDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- Global Firebase & App Variables ---
+        let db, auth, app;
+        let userId;
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        let localStream;
+        let canvasStream;
+        let pc; // Single PeerConnection
+        let roomRef;
+        let offerCandidatesRef;
+        let answerCandidatesRef;
+        let animationFrameId;
+
+        // --- DOM Elements ---
+        const startButton = document.getElementById('startButton');
+        const joinButton = document.getElementById('joinButton');
+        const roomIdInput = document.getElementById('roomId');
+        const lowBandwidthToggle = document.getElementById('lowBandwidthToggle');
+        
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const canvas = document.getElementById('processingCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('statusText');
+
+        // --- Video Constants ---
+        const VIDEO_WIDTH = 400;
+        const VIDEO_HEIGHT = 400;
+        const CROP_SIZE = 200; // The 200x200 area you suggested
+        const CROP_X = (VIDEO_WIDTH - CROP_SIZE) / 2; // 100
+        const CROP_Y = (VIDEO_HEIGHT - CROP_SIZE) / 2; // 100
+
+        // --- WebRTC Server Config ---
+        const rtcConfig = {
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] // Public STUN server
+        };
+
+        // --- Event Listeners ---
+        window.onload = initFirebase; // Start Firebase on page load
+        startButton.onclick = startCamera;
+        joinButton.onclick = joinOrCreateRoom;
+        lowBandwidthToggle.onchange = toggleBandwidthMode;
+
+        // --- Firebase Initialization ---
+        async function initFirebase() {
+            try {
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                setLogLevel('debug'); // Enable Firestore logging
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log('Firebase Auth Success. User ID:', userId);
+                        statusText.textContent = 'Firebase connected. Ready for camera.';
+                        startButton.disabled = false;
+                    } else {
+                        // Not authenticated
+                        console.log('User is not authenticated. Signing in...');
+                        if (typeof __initial_auth_token !== 'undefined') {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+
+            } catch (e) {
+                console.error("Firebase initialization error:", e);
+                statusText.textContent = 'Firebase init failed. Check config.';
+            }
+        }
+
+        /**
+         * 1. Starts the camera and displays the raw feed in 'localVideo'.
+         * Also prepares the canvas stream for processing.
+         */
+        async function startCamera() {
+            if (!auth.currentUser) {
+                statusText.textContent = 'Waiting for Firebase auth...';
+                return;
+            }
+            try {
+                // Get the raw camera stream
+                localStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: VIDEO_WIDTH, height: VIDEO_HEIGHT }, 
+                    audio: true // Enabled audio for a real call
+                });
+                localVideo.srcObject = localStream;
+
+                // Start the processing loop
+                processVideoFrame();
+
+                // Get the stream from the canvas, which will be sent to the peer
+                canvasStream = canvas.captureStream(30); // 30 fps
+                
+                // Add audio track from local stream to canvas stream
+                localStream.getAudioTracks().forEach(track => {
+                    canvasStream.addTrack(track);
+                });
+
+                startButton.disabled = true;
+                joinButton.disabled = false;
+                roomIdInput.disabled = false;
+                startButton.textContent = 'Camera On';
+                startButton.classList.replace('bg-blue-600', 'bg-gray-500');
+                statusText.textContent = 'Camera on. Enter a Room ID to join.';
+
+            } catch (e) {
+                console.error('Error starting camera: ', e);
+                statusText.textContent = 'Could not access camera. Please check permissions.';
+            }
+        }
+
+        /**
+         * This is the core of your idea!
+         * It runs 30x per second, drawing the video to the canvas.
+         */
+        function processVideoFrame() {
+            if (lowBandwidthToggle.checked) {
+                // LOW BANDWIDTH MODE (Method B: Masking)
+                ctx.fillStyle = 'black';
+                ctx.fillRect(0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+                ctx.drawImage(
+                    localVideo, 
+                    CROP_X, CROP_Y, CROP_SIZE, CROP_SIZE, // Source (from video)
+                    CROP_X, CROP_Y, CROP_SIZE, CROP_SIZE  // Destination (on canvas)
+                );
+            } else {
+                // FULL BANDWIDTH MODE
+                ctx.drawImage(localVideo, 0, 0, VIDEO_WIDTH, VIDEO_HEIGHT);
+            }
+            // Keep the loop running
+            animationFrameId = requestAnimationFrame(processVideoFrame);
+        }
+
+        /**
+         * 2. Joins or Creates a video chat room using Firestore Signaling
+         */
+        async function joinOrCreateRoom() {
+            const roomId = roomIdInput.value;
+            if (!roomId) {
+                statusText.textContent = 'Please enter a Room ID.';
+                return;
+            }
+            joinButton.disabled = true;
+            statusText.textContent = `Joining room: ${roomId}...`;
+
+            // Define Firestore paths
+            // Using public path for a multi-user app
+            const roomCollectionPath = `artifacts/${appId}/public/data/webrtc-rooms`;
+            roomRef = doc(db, roomCollectionPath, roomId);
+            offerCandidatesRef = collection(roomRef, 'offerCandidates');
+            answerCandidatesRef = collection(roomRef, 'answerCandidates');
+
+            // --- Create Peer Connection ---
+            pc = new RTCPeerConnection(rtcConfig);
+
+            // Add local tracks (from canvas + original audio) to the connection
+            canvasStream.getTracks().forEach(track => {
+                pc.addTrack(track, canvasStream);
+            });
+
+            // --- Setup Event Handlers ---
+
+            // When the remote user adds their track, display it
+            pc.ontrack = e => {
+                if (e.streams && e.streams[0]) {
+                    remoteVideo.srcObject = e.streams[0];
+                }
+            };
+
+            // When we get an ICE candidate, send it to Firestore
+            pc.onicecandidate = async e => {
+                if (e.candidate) {
+                    // Check if we are the 'offer' or 'answer' side
+                    const docSnap = await getDoc(roomRef);
+                    if (docSnap.exists() && docSnap.data().answer) {
+                        await addDoc(answerCandidatesRef, e.candidate.toJSON());
+                    } else {
+                        await addDoc(offerCandidatesRef, e.candidate.toJSON());
+                    }
+                }
+            };
+
+            // --- Signaling Logic ---
+            const roomDoc = await getDoc(roomRef);
+
+            if (!roomDoc.exists() || !roomDoc.data().offer) {
+                // --- We are the CALLER ---
+                statusText.textContent = 'Creating new room...';
+                
+                // 1. Create offer
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // 2. Set offer in Firestore
+                await setDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp } });
+
+                // 3. Listen for the ANSSWER from the other user
+                onSnapshot(roomRef, async (doc) => {
+                    const data = doc.data();
+                    if (data && data.answer && !pc.currentRemoteDescription) {
+                        statusText.textContent = 'Peer connected! Setting answer...';
+                        const answer = new RTCSessionDescription(data.answer);
+                        await pc.setRemoteDescription(answer);
+                    }
+                });
+
+                // 4. Listen for ANSWER's ICE candidates
+                onSnapshot(answerCandidatesRef, (snapshot) => {
+                    snapshot.docChanges().forEach((change) => {
+                        if (change.type === 'added') {
+                            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                        }
+                    });
+                });
+
+            } else {
+                // --- We are the JOINER (Callee) ---
+                statusText.textContent = 'Joining existing room...';
+
+                // 1. Get OFFER from Firestore
+                const offer = roomDoc.data().offer;
+                await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+                // 2. Create ANSWER
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+
+                // 3. Set ANSWER in Firestore
+                await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
+
+                // 4. Listen for OFFER's ICE candidates
+                onSnapshot(offerCandidatesRef, (snapshot) => {
+                    snapshot.docChanges().forEach((change) => {
+                        if (change.type === 'added') {
+                            pc.addIceCandidate(new RTCIceCandidate(change.doc.data()));
+                        }
+                    });
+                });
+            }
+
+            joinButton.textContent = 'In Call';
+            statusText.textContent = 'WebRTC Handshake in progress...';
+        }
+
+
+        /**
+         * This function just logs the state. The real magic happens
+         * inside processVideoFrame() which checks the toggle state.
+         */
+        function toggleBandwidthMode() {
+            if (lowBandwidthToggle.checked) {
+                console.log('Low Bandwidth Mode: ON');
+                remoteVideo.classList.add('border-blue-500');
+                remoteVideo.classList.remove('border-gray-600');
+            } else {
+                console.log('Low Bandwidth Mode: OFF');
+                remoteVideo.classList.remove('border-blue-500');
+                remoteVideo.classList.add('border-gray-600');
+            }
+        }
+
+    </script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans antialiased min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div class="max-w-5xl w-full p-6 bg-gray-800 rounded-2xl shadow-xl">
+        <h1 class="text-3xl font-bold text-center text-blue-400 mb-2">Low-Bandwidth Video Chat (Multi-User)</h1>
+        <p id="statusText" class="text-center text-gray-400 mb-6">Connecting to Firebase...</p>
+
+        <!-- Control Panel -->
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-6 p-4 bg-gray-700 rounded-lg">
+            <button id="startButton" class="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 shadow-md" disabled>1. Start Camera</button>
+            
+            <input type="text" id="roomId" placeholder="Enter Room ID" class="text-gray-900 text-center font-medium p-3 rounded-lg w-full sm:w-auto" disabled>
+            
+            <button id="joinButton" class_toggle="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg transition-all duration-200 shadow-md" disabled>2. Join Room</button>
+            
+            <!-- Low Bandwidth Toggle -->
+            <div class="flex items-center justify-center gap-3 ml-0 sm:ml-6 mt-4 sm:mt-0">
+                <div class="relative inline-block w-14 align-middle select-none transition duration-200 ease-in">
+                    <input type="checkbox" name="toggle" id="lowBandwidthToggle" class="toggle-checkbox absolute block w-7 h-7 rounded-full bg-white border-4 appearance-none cursor-pointer top-0.5 left-0.5 transition-all duration-300 ease-in-out"/>
+                    <label for="lowBandwidthToggle" class="toggle-label block overflow-hidden h-8 rounded-full bg-gray-500 cursor-pointer"></label>
+                </div>
+                <label for="lowBandwidthToggle" class="text-lg font-medium text-white">Low Bandwidth Mode</label>
+            </div>
+        </div>
+
+        <!-- Video Feeds -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Local Video (Your Camera) -->
+            <div class="bg-gray-700 p-4 rounded-lg shadow-inner">
+                <h2 class="text-xl font-semibold text-center mb-3">Your Camera (Full 400x400)</h2>
+                <video id="localVideo" autoplay playsinline muted class="w-[400px] h-[400px] mx-auto bg-black rounded-md border-2 border-gray-600"></video>
+                <p class="text-center text-gray-400 text-sm mt-2">This is the raw, high-quality feed from your webcam.</p>
+            </div>
+
+            <!-- Remote Video (What your friend sees) -->
+            <div class="bg-gray-700 p-4 rounded-lg shadow-inner">
+                <h2 class="text-xl font-semibold text-center mb-3">Remote Video (Processed)</h2>
+                <video id="remoteVideo" autoplay playsinline class="w-[400px] h-[400px] mx-auto bg-black rounded-md border-2 border-gray-600"></video>
+                <p class="text-center text-gray-400 text-sm mt-2">This is what the other person receives. Notice it's sharp, just small!</p>
+            </div>
+        </div>
+
+        <!-- Hidden Canvas for processing -->
+        <canvas id="processingCanvas" width="400" height="400" class="hidden"></canvas>
+    </div>
+
+</body>
+</html>
