@@ -1,72 +1,56 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Low-Bandwidth Person-Only WebRTC (Firebase Signaling)</title>
-
-  <!-- Tailwind for styling (optional) -->
-  <script src="https://cdn.tailwindcss.com"></script>
-
-  <style>
-    body { background:#0f1724; color:#e6eef8; font-family: system-ui,Segoe UI,Roboto,Arial; }
-    .card { max-width:900px; margin:28px auto; background:#0b1320; padding:20px; border-radius:12px; box-shadow:0 10px 40px rgba(2,6,23,.6); }
-    pre { background:#02111a; color:#8ff0d6; padding:10px; border-radius:8px; height:160px; overflow:auto; font-family:monospace; font-size:13px; }
-    .small { font-size:13px; color:#9fb3c8 }
-    .btn { padding:10px 14px; border-radius:8px; cursor:pointer; border:0 }
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Low-Bandwidth Person-Only WebRTC (Create / Join)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background:#041226; color:#dbeafe; font-family:system-ui,Segoe UI,Roboto,Arial; }
+  .card { max-width:1000px; margin:28px auto; padding:18px; border-radius:12px; background:#062235; }
+  pre { background:#02141b; color:#bff3e0; padding:10px; border-radius:8px; height:160px; overflow:auto; font-family:monospace; }
+  .small{font-size:13px;color:#9fb3c8}
+</style>
 </head>
 <body>
   <div class="card">
-    <h1 class="text-2xl font-semibold text-center text-cyan-300 mb-3">Low-Bandwidth Person-Only WebRTC</h1>
-    <p id="statusText" class="small text-center mb-4">Initializing…</p>
+    <h1 class="text-2xl text-center text-cyan-300 mb-2">Low-Bandwidth Person-Only WebRTC</h1>
+    <p id="statusText" class="small text-center mb-4">Initializing Firebase…</p>
 
     <div class="flex gap-2 mb-4">
-      <button id="startButton" class="btn bg-sky-600 text-black" disabled>1. Start Camera</button>
-      <input id="roomId" placeholder="Room ID (e.g. testroom1)" class="p-2 rounded w-full" disabled />
-      <button id="joinButton" class="btn bg-emerald-600 text-black" disabled>2. Join Room</button>
-      <label class="flex items-center gap-2 ml-2">
-        <input id="lowBandwidthToggle" type="checkbox" /> <span class="small">Low Bandwidth (crop)</span>
-      </label>
+      <button id="startButton" class="bg-sky-600 px-3 py-2 rounded" disabled>Start Camera</button>
+      <input id="roomId" placeholder="Room ID (e.g. demo-room)" class="p-2 rounded w-full" disabled />
+      <button id="createButton" class="bg-indigo-600 px-3 py-2 rounded" disabled>Create Room</button>
+      <button id="joinButton" class="bg-emerald-600 px-3 py-2 rounded" disabled>Join Room</button>
+      <label class="flex items-center gap-2 ml-2 small"><input id="lowBandwidthToggle" type="checkbox" /> Low Bandwidth</label>
     </div>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div class="bg-slate-900 p-3 rounded">
         <h3 class="small mb-2">Local Camera</h3>
-        <video id="localVideo" autoplay playsinline muted class="w-full bg-black" style="height:400px;object-fit:cover;border-radius:6px;"></video>
-        <p class="small mt-2">Raw camera feed (for preview)</p>
+        <video id="localVideo" autoplay playsinline muted class="w-full bg-black" style="height:360px;object-fit:cover;border-radius:6px;"></video>
       </div>
       <div class="bg-slate-900 p-3 rounded">
-        <h3 class="small mb-2">Remote Video (what peer receives)</h3>
-        <video id="remoteVideo" autoplay playsinline class="w-full bg-black" style="height:400px;object-fit:cover;border-radius:6px;"></video>
-        <p class="small mt-2">Remote processed stream</p>
+        <h3 class="small mb-2">Remote Video</h3>
+        <video id="remoteVideo" autoplay playsinline class="w-full bg-black" style="height:360px;object-fit:cover;border-radius:6px;"></video>
       </div>
     </div>
 
     <canvas id="processingCanvas" width="400" height="400" class="hidden"></canvas>
 
-    <h4 class="mt-4 small">Debug Log</h4>
+    <h4 class="small mt-4">Debug / Console</h4>
     <pre id="debugLog">— logs will appear here —</pre>
-    <p class="small mt-2">Notes: Enable Firestore & Authentication (Anonymous) in Firebase Console for this to work.</p>
   </div>
 
-  <!-- Firebase modular CDN (v12.5.0) -->
   <script type="module">
-  /*****************************************************************************
-   *  Full single-file app:
-   *  - Initializes Firebase (modular CDN)
-   *  - Anonymous sign-in
-   *  - Firestore-based signaling (simple document+collections)
-   *  - Person-only canvas capture -> canvas.captureStream -> sent to peer (with audio)
-   *
-   *  Usage:
-   *   1) Replace firebaseConfig below with values from your Firebase Console (or keep if already correct).
-   *   2) Enable Authentication -> Anonymous and Firestore DB (test mode) in console.
-   *   3) Serve locally: python -m http.server 3000  (open http://localhost:3000)
-   *   4) Open page in two browser windows (or two machines), Start on both, then Join (same Room ID).
-   *****************************************************************************/
+  /*************************************************************************
+   * Improved WebRTC + Firestore signaling demo
+   * - Explicit Create Room and Join Room buttons
+   * - Tries to enable Firestore network before reading the doc (better error handling)
+   * - Shows clearer error messages when client appears offline
+   *************************************************************************/
 
-  // ---------- FIREBASE CONFIG (paste your config if different) ----------
+  // ------ YOUR FIREBASE CONFIG ------
   const firebaseConfig = {
     apiKey: "AIzaSyA5gHyKnfcKfA8HmotGBhR_P0E--HFvb5o",
     authDomain: "web-rtc-3e9c2.firebaseapp.com",
@@ -77,15 +61,19 @@
     measurementId: "G-HGDQB1P1NT"
   };
 
-  // ---------- IMPORTS ----------
+  // ------ imports ------
   import { initializeApp } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-app.js";
   import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-auth.js";
-  import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
+  import {
+    getFirestore, doc, getDoc, setDoc, updateDoc, collection,
+    addDoc, onSnapshot, enableNetwork
+  } from "https://www.gstatic.com/firebasejs/12.5.0/firebase-firestore.js";
 
-  // ---------- DOM refs ----------
+  // ------ DOM refs ------
   const statusText = document.getElementById('statusText');
   const debugLog = document.getElementById('debugLog');
   const startButton = document.getElementById('startButton');
+  const createButton = document.getElementById('createButton');
   const joinButton = document.getElementById('joinButton');
   const roomIdInput = document.getElementById('roomId');
   const lowBandwidthToggle = document.getElementById('lowBandwidthToggle');
@@ -94,224 +82,208 @@
   const canvas = document.getElementById('processingCanvas');
   const ctx = canvas.getContext('2d');
 
-  function dlog(...args){ console.log(...args); debugLog.textContent += args.join(' ') + '\\n'; debugLog.scrollTop = debugLog.scrollHeight; }
-  function setStatus(s){ statusText.textContent = s; dlog('[status]', s); }
-
-  // ---------- Video/canvas constants ----------
-  const VIDEO_W = 400, VIDEO_H = 400;
-  const CROP_SIZE = 200;
-  const CROP_X = (VIDEO_W - CROP_SIZE) / 2;
-  const CROP_Y = CROP_X;
-
-  // ---------- WebRTC config ----------
+  const VIDEO_W = 400, VIDEO_H = 400, CROP_SIZE = 200, CROP_X = (VIDEO_W-CROP_SIZE)/2, CROP_Y = CROP_X;
   const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-  // ---------- App state ----------
+  function log(...a){ console.log(...a); debugLog.textContent += a.join(' ') + '\\n'; debugLog.scrollTop = debugLog.scrollHeight;}
+  function setStatus(s){ statusText.textContent = s; log('[status]', s); }
+
+  // ------ state ------
   let app, auth, db;
-  let localStream = null;
-  let canvasStream = null;
-  let pc = null;
-  let roomRef = null;
-  let offerCandidatesRef = null;
-  let answerCandidatesRef = null;
+  let pc = null, localStream = null, canvasStream = null;
+  let roomRef = null, offerCandidatesRef = null, answerCandidatesRef = null;
+  const ROOM_ROOT = `webrtc_rooms_demo`; // top-level collection path
 
-  // Enable UI events AFTER DOM loaded (script is at bottom but safe)
+  // UI events
   startButton.onclick = startCamera;
-  joinButton.onclick = joinOrCreateRoom;
-  lowBandwidthToggle.onchange = ()=> dlog('lowBandwidthToggle', lowBandwidthToggle.checked);
+  createButton.onclick = createRoom;
+  joinButton.onclick = joinRoom;
+  lowBandwidthToggle.onchange = ()=> log('lowBandwidth', lowBandwidthToggle.checked);
 
-  // ---------- Initialize Firebase and sign-in ----------
+  // init firebase
   try {
     app = initializeApp(firebaseConfig);
     db = getFirestore(app);
-    auth = getAuth ? getAuth(app) : null; // for compatibility
-    dlog('Firebase init OK');
-    setStatus('Firebase initialized — signing in...');
-
-    // Sign-in flow: use custom token if provided in window.__initial_auth_token else anonymous
-    onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        dlog('Auth user:', user.uid);
-        setStatus('Signed in anonymously (uid: ' + user.uid + '). Ready to start camera.');
+    auth = getAuth ? getAuth(app) : null;
+    setStatus('Firebase initialized. Signing in...');
+    onAuthStateChanged(auth, async user => {
+      if(user){
+        setStatus('Signed in: ' + user.uid);
         startButton.disabled = false;
+        createButton.disabled = false;
+        joinButton.disabled = false;
+        roomIdInput.disabled = false;
       } else {
         setStatus('Signing in anonymously...');
         try {
-          if (typeof window.__initial_auth_token !== 'undefined') {
+          if(typeof window.__initial_auth_token !== 'undefined'){
             await signInWithCustomToken(auth, window.__initial_auth_token);
           } else {
             await signInAnonymously(auth);
           }
-          dlog('Sign-in triggered.');
-        } catch (e) {
-          dlog('Auth error:', e);
+          log('Sign-in requested');
+        } catch(e){
+          log('Auth error', e);
           setStatus('Auth failed: ' + (e && e.message));
         }
       }
     });
-  } catch (e) {
-    dlog('Firebase init error', e);
+  } catch(e){
+    log('Firebase init error', e);
     setStatus('Firebase init error: ' + (e && e.message));
   }
 
-  // ---------- Camera + Canvas handling ----------
+  // start camera & canvas
   async function startCamera(){
-    if (!auth || !auth.currentUser) {
-      setStatus('Waiting for Firebase auth...');
-      return;
-    }
     try {
       setStatus('Requesting camera...');
-      localStream = await navigator.mediaDevices.getUserMedia({ video:{width:VIDEO_W, height:VIDEO_H}, audio:true });
+      localStream = await navigator.mediaDevices.getUserMedia({ video:{width:VIDEO_W,height:VIDEO_H}, audio:true });
       localVideo.srcObject = localStream;
       localVideo.muted = true;
-
-      // Start draw loop
-      function drawFrame(){
-        if (lowBandwidthToggle.checked) {
-          // fill black background and draw cropped center region
-          ctx.fillStyle = 'black';
-          ctx.fillRect(0,0,VIDEO_W,VIDEO_H);
+      // draw loop
+      function draw(){
+        if(lowBandwidthToggle.checked){
+          ctx.fillStyle='black'; ctx.fillRect(0,0,VIDEO_W,VIDEO_H);
           ctx.drawImage(localVideo, CROP_X, CROP_Y, CROP_SIZE, CROP_SIZE, CROP_X, CROP_Y, CROP_SIZE, CROP_SIZE);
         } else {
           ctx.drawImage(localVideo, 0,0, VIDEO_W, VIDEO_H);
         }
-        requestAnimationFrame(drawFrame);
+        requestAnimationFrame(draw);
       }
-      requestAnimationFrame(drawFrame);
-
-      // Get canvas stream and add audio tracks
-      canvasStream = canvas.captureStream(15); // 15 fps
-      localStream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
-
-      startButton.disabled = true;
-      joinButton.disabled = false;
-      roomIdInput.disabled = false;
-      setStatus('Camera on. Enter room ID and click "Join Room".');
-      dlog('Canvas stream tracks:', canvasStream.getTracks().map(t=>t.kind+':'+t.id).join(', '));
-    } catch (e) {
-      dlog('startCamera error', e);
+      requestAnimationFrame(draw);
+      canvasStream = canvas.captureStream(15);
+      localStream.getAudioTracks().forEach(t=>canvasStream.addTrack(t));
+      setStatus('Camera started. Use Create Room or Join Room.');
+      log('canvasStream tracks', canvasStream.getTracks().map(t=>t.kind+':'+t.id).join(', '));
+    } catch(e){
+      log('camera error', e);
       setStatus('Camera error: ' + (e && e.message));
     }
   }
 
-  // ---------- Firestore signaling helpers ----------
-  // Room path root (you can change; keep consistent for both peers)
-  const APP_ID = 'low-bandwidth-demo'; // or use dynamic value
-
-  function roomDocRef(roomId){
-    // Use a nested path like artifacts/<app>/data/webrtc-rooms
-    const path = `artifacts/${APP_ID}/public/data/webrtc-rooms`;
-    return doc(db, path, roomId);
+  // helper: build doc refs
+  function getRoomRefs(roomId){
+    const r = doc(db, ROOM_ROOT, roomId);
+    const offers = collection(r, 'offerCandidates');
+    const answers = collection(r, 'answerCandidates');
+    return { roomRef: r, offerCandidatesRef: offers, answerCandidatesRef: answers };
   }
 
-  async function joinOrCreateRoom(){
-    const roomId = roomIdInput.value && roomIdInput.value.trim();
-    if(!roomId) { setStatus('Please enter a Room ID'); return; }
-    joinButton.disabled = true;
-    setStatus('Joining room: ' + roomId);
-    dlog('joinOrCreateRoom', roomId);
+  // Create Room (explicit caller)
+  async function createRoom(){
+    const roomId = (roomIdInput.value || '').trim();
+    if(!roomId){ setStatus('Enter a Room ID to create'); return; }
+    if(!canvasStream){ setStatus('Start camera first'); return; }
 
+    setStatus('Creating room: ' + roomId);
     try {
-      // create pc
+      // prepare RTCPeerConnection
       pc = new RTCPeerConnection(rtcConfig);
+      canvasStream.getTracks().forEach(t=>pc.addTrack(t, canvasStream));
+      pc.ontrack = ev => { if(ev.streams && ev.streams[0]) remoteVideo.srcObject = ev.streams[0]; };
 
-      // add local tracks from canvasStream
-      if(!canvasStream) { setStatus('Canvas stream not ready. Start camera first.'); joinButton.disabled = false; return; }
-      canvasStream.getTracks().forEach(track => pc.addTrack(track, canvasStream));
-
-      // show remote stream when available
-      pc.ontrack = (ev) => {
-        if(ev.streams && ev.streams[0]) {
-          remoteVideo.srcObject = ev.streams[0];
-          dlog('Remote stream attached');
-        }
-      };
-
-      // ICE candidates -> Firestore
-      pc.onicecandidate = async (e) => {
+      // ICE -> write to offer/answer collections as appropriate
+      pc.onicecandidate = async e => {
         if(!e.candidate) return;
-        const rRef = roomRef;
-        const docSnap = await getDoc(rRef);
-        if(docSnap.exists() && docSnap.data() && docSnap.data().answer){
+        const { roomRef, offerCandidatesRef, answerCandidatesRef } = getRoomRefs(roomId);
+        const snap = await getDoc(roomRef).catch(err => { log('getDoc error (ice candidate):', err); return null; });
+        if(snap && snap.exists() && snap.data() && snap.data().answer){
           await addDoc(answerCandidatesRef, e.candidate.toJSON());
         } else {
           await addDoc(offerCandidatesRef, e.candidate.toJSON());
         }
       };
 
-      // Firestore path setup
-      roomRef = roomDocRef(roomId);
-      offerCandidatesRef = collection(roomRef, 'offerCandidates');
-      answerCandidatesRef = collection(roomRef, 'answerCandidates');
+      // create offer
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
 
-      const roomSnapshot = await getDoc(roomRef);
+      // save offer to Firestore (create doc)
+      const { roomRef, answerCandidatesRef } = getRoomRefs(roomId);
+      await setDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp }, createdAt: Date.now() });
+      setStatus('Offer written. Waiting for answer...');
 
-      if(!roomSnapshot.exists() || !roomSnapshot.data().offer){
-        // Caller: create offer
-        setStatus('Creating room & offer...');
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+      // listen for answer
+      onSnapshot(roomRef, async snap => {
+        const data = snap.data();
+        if(data && data.answer && !pc.currentRemoteDescription){
+          log('Answer arrived');
+          const answer = new RTCSessionDescription(data.answer);
+          await pc.setRemoteDescription(answer);
+          setStatus('Connected (caller).');
+        }
+      });
 
-        await setDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp } });
-        dlog('Offer written to Firestore');
-
-        // Listen for answer
-        onSnapshot(roomRef, async (snap) => {
-          const data = snap.data();
-          if(data && data.answer && !pc.currentRemoteDescription){
-            dlog('Answer arrived');
-            const answer = new RTCSessionDescription(data.answer);
-            await pc.setRemoteDescription(answer);
-            setStatus('Connected (caller).');
+      // listen for answer candidates
+      onSnapshot(answerCandidatesRef, (snapshot) => {
+        snapshot.docChanges().forEach(change=>{
+          if(change.type==='added'){
+            pc.addIceCandidate(new RTCIceCandidate(change.doc.data())).catch(e=>log('addIceErr', e));
           }
         });
+      });
 
-        // Listen answer candidates
-        onSnapshot(answerCandidatesRef, (snapshot) => {
-          snapshot.docChanges().forEach(change => {
-            if(change.type === 'added'){
-              const cand = change.doc.data();
-              pc.addIceCandidate(new RTCIceCandidate(cand)).catch(e=>dlog('addIceCandidate failed', e));
-            }
-          });
-        });
-
-      } else {
-        // Callee: join existing room
-        setStatus('Joining existing room...');
-        const offer = roomSnapshot.data().offer;
-        await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
-        dlog('Answer saved to Firestore');
-
-        // Listen for offer candidates
-        onSnapshot(offerCandidatesRef, (snapshot) => {
-          snapshot.docChanges().forEach(change => {
-            if(change.type === 'added'){
-              const cand = change.doc.data();
-              pc.addIceCandidate(new RTCIceCandidate(cand)).catch(e=>dlog('ice add failed', e));
-            }
-          });
-        });
-
-        setStatus('Connected (callee).');
-      }
-
-      joinButton.textContent = 'In Call';
-      dlog('WebRTC handshake in progress');
-
-    } catch (e) {
-      dlog('joinOrCreateRoom error', e);
-      setStatus('Signaling error: ' + (e && e.message));
-      joinButton.disabled = false;
+    } catch(e){
+      log('createRoom error', e);
+      setStatus('Create room failed: ' + (e && e.message));
     }
   }
 
-  // ---------- End of module ----------
+  // Join existing room (callee)
+  async function joinRoom(){
+    const roomId = (roomIdInput.value || '').trim();
+    if(!roomId){ setStatus('Enter a Room ID to join'); return; }
+    if(!canvasStream){ setStatus('Start camera first'); return; }
+    setStatus('Joining room: ' + roomId);
+
+    try {
+      // ensure Firestore network is enabled (helps with "client is offline" errors)
+      try { await enableNetwork(db); log('Firestore network enabled'); } catch(e){ log('enableNetwork failed', e); }
+
+      const { roomRef, offerCandidatesRef, answerCandidatesRef } = getRoomRefs(roomId);
+      // read the room doc
+      const snap = await getDoc(roomRef).catch(e => { log('getDoc error', e); return null; });
+      if(!snap || !snap.exists()){
+        setStatus('Signaling error: room does not exist. Create it first.');
+        return;
+      }
+
+      const roomData = snap.data();
+      if(!roomData.offer){
+        setStatus('Signaling error: room has no offer. Maybe caller not ready.');
+        return;
+      }
+
+      // create pc and set remote offer
+      pc = new RTCPeerConnection(rtcConfig);
+      canvasStream.getTracks().forEach(t=>pc.addTrack(t, canvasStream));
+      pc.ontrack = ev => { if(ev.streams && ev.streams[0]) remoteVideo.srcObject = ev.streams[0]; };
+
+      pc.onicecandidate = async e => {
+        if(!e.candidate) return;
+        // add to answerCandidates
+        await addDoc(answerCandidatesRef, e.candidate.toJSON());
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(roomData.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp }});
+      setStatus('Answer created & saved. Waiting for remote candidates...');
+
+      // listen for offerCandidates (caller)
+      onSnapshot(offerCandidatesRef, (snapshot) => {
+        snapshot.docChanges().forEach(change=>{
+          if(change.type==='added') pc.addIceCandidate(new RTCIceCandidate(change.doc.data())).catch(e=>log('addIce err', e));
+        });
+      });
+
+    } catch(e){
+      log('joinRoom error', e);
+      setStatus('Signaling error: ' + (e && e.message));
+    }
+  }
+
   </script>
 </body>
 </html>
